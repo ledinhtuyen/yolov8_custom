@@ -484,7 +484,7 @@ class BaseTrainer:
                 "version": __version__,
                 "license": "AGPL-3.0 (https://ultralytics.com/license)",
                 "docs": "https://docs.ultralytics.com",
-                "model_scale": self.model.model_scale
+                "model_scale": self.model.model_scale if hasattr(self.model, "model_scale") else "",
             },
             buffer,
         )
@@ -515,6 +515,25 @@ class BaseTrainer:
                 data = check_det_dataset(self.args.data)
                 if "yaml_file" in data:
                     self.args.data = data["yaml_file"]  # for validating 'yolo train data=url.zip' usage
+            elif self.args.data.split(".")[-1] in {"json"} and self.args.task == "custom":
+                import json
+                
+                data = {"train": {}, "test": {}}
+                data_json = json.load(open(self.args.data))
+                
+                for k, v in data_json.items():
+                    if k != "metadata":
+                        data["train"][k] = v["train"]
+                        data["test"][k] = v["test"]
+                
+                # Sort the names
+                data["train"] = dict(sorted(data["train"].items()))
+                data["test"] = dict(sorted(data["test"].items()))
+                data["nc"] = len(data["train"])
+                
+                # Class names to idx
+                names_list = sorted(list(data["train"].keys()))
+                data["names"] = {i: v for i, v in enumerate(names_list)}
         except Exception as e:
             raise RuntimeError(emojis(f"Dataset '{clean_url(self.args.data)}' error ❌ {e}")) from e
         self.data = data

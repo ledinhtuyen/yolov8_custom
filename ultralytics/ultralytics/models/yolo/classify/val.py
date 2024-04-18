@@ -31,7 +31,10 @@ class ClassificationValidator(BaseValidator):
         super().__init__(dataloader, save_dir, pbar, args, _callbacks)
         self.targets = None
         self.pred = None
-        self.args.task = "classify"
+        if args.get("task") != "classify":
+            self.args.task = "custom"
+        else:
+            self.args.task = "classify"
         self.metrics = ClassifyMetrics()
 
     def get_desc(self):

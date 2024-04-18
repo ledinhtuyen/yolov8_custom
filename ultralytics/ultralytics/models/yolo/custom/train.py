@@ -1,19 +1,11 @@
 from ultralytics.engine.trainer import BaseTrainer
 from ultralytics.nn.tasks import CustomModel
-from ultralytics.utils import LOGGER, RANK, DEFAULT_CFG
+from ultralytics.utils import RANK
 from ultralytics.models.yolo.detect.train import DetectionTrainer
 from ultralytics.models.yolo.classify.train import ClassificationTrainer
+from ultralytics.models import yolo
 
 class CustomTrainer(BaseTrainer):
-    def __init__(self, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
-        """Initialize a ClassificationTrainer object with optional configuration overrides and callbacks."""
-        # if overrides is None:
-        #     overrides = {}
-        # overrides["task"] = "classify"
-        # if overrides.get("imgsz") is None:
-        #     overrides["imgsz"] = 224
-        super().__init__(cfg, overrides, _callbacks)    
-
     def get_model(self, cfg=None, weights=None, verbose=True, *args, **kwargs):
         """Return a YOLO custom model."""
         self.kwargs = kwargs
@@ -33,14 +25,22 @@ class CustomTrainer(BaseTrainer):
     def build_dataset(self, img_path, mode="train", batch=None):
         if self.kwargs['branch'].startswith("detect"):
             return DetectionTrainer.build_dataset(self, img_path, mode, batch)
+        elif self.kwargs['branch'].startswith("cls"):
+            return ClassificationTrainer.build_dataset(self, img_path, mode, batch)
         
     def get_dataloader(self, dataset_path, batch_size=16, rank=0, mode="train"):
         if self.kwargs['branch'].startswith("detect"):
             return DetectionTrainer.get_dataloader(self, dataset_path, batch_size, rank, mode)
+        elif self.kwargs['branch'].startswith("cls"):
+            return ClassificationTrainer.get_dataloader(self, dataset_path, batch_size, rank, mode)
 
     def get_validator(self):
         if self.kwargs['branch'].startswith("detect"):
             return DetectionTrainer.get_validator(self)
+        elif self.kwargs['branch'].startswith("cls"):
+            self.loss_names = ["loss"]
+            args = {"task": "custom"}
+            return yolo.classify.ClassificationValidator(self.test_loader, self.save_dir, args=args, _callbacks=self.callbacks)
         
     def set_model_attributes(self):
         if self.kwargs['branch'].startswith("detect"):
@@ -87,5 +87,7 @@ class CustomTrainer(BaseTrainer):
             return DetectionTrainer.plot_training_labels(self)
     
     def final_eval(self):
-        if self.kwargs['branch'].startswith("cls"):
+        if self.kwargs['branch'].startswith("detect"):
+            return DetectionTrainer.final_eval(self)
+        elif self.kwargs['branch'].startswith("cls"):
             return ClassificationTrainer.final_eval(self)

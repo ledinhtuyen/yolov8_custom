@@ -415,10 +415,22 @@ class ClassificationDataset:
         import torchvision  # scope for faster 'import ultralytics'
 
         # Base class assigned as attribute rather than used as base class to allow for scoping slow torchvision import
-        self.base = torchvision.datasets.ImageFolder(root=root)
-        self.samples = self.base.samples
-        self.root = self.base.root
-
+        if args.task != "custom":
+            self.base = torchvision.datasets.ImageFolder(root=root)
+            self.samples = self.base.samples
+            self.root = self.base.root
+        else:
+            samples = []
+            prefix_path = args.prefix_path
+            
+            # Loop for dictionary with index
+            for i, (k, v) in enumerate(root.items()):
+                # Loop for each image
+                for img in v:
+                    samples.append((f"{prefix_path}/{img}", i))
+            self.samples = samples
+            self.root = Path(args.save_dir)
+        
         # Initialize attributes
         if augment and args.fraction < 1.0:  # reduce training fraction
             self.samples = self.samples[: round(len(self.samples) * args.fraction)]

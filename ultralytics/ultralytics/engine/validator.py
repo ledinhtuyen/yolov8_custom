@@ -143,6 +143,8 @@ class BaseValidator:
                 self.data = check_det_dataset(self.args.data)
             elif self.args.task == "classify":
                 self.data = check_cls_dataset(self.args.data, split=self.args.split)
+            elif str(self.args.data).split(".")[-1] in {"json"} and self.args.task == "custom":
+                pass
             else:
                 raise FileNotFoundError(emojis(f"Dataset '{self.args.data}' for task={self.args.task} not found ❌"))
 
