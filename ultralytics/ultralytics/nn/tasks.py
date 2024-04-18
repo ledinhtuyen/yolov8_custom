@@ -686,6 +686,7 @@ class CustomModel(BaseModel):
         """Init  with YAML, channels, number of classes, verbose flag."""
         super().__init__(*args, **kwargs)
         self._from_yaml(cfg, ch, nc, verbose, *args, **kwargs)
+        self.model_scale = kwargs.get("model_scale", "n")
         self.kwargs = kwargs
 
     def _from_yaml(self, cfg, ch, nc, verbose, *args, **kwargs):
@@ -698,14 +699,13 @@ class CustomModel(BaseModel):
         elif not nc and not self.yaml.get("nc", None):
             raise ValueError("nc not specified. Must specify nc in model.yaml or function arguments.")
         
-        self.model, self.save = parse_model(deepcopy(self.yaml), ch=3, verbose=False)
+        self.model, self.save = parse_model(deepcopy(self.yaml), ch=3, verbose=verbose)
 
         if kwargs.get("ckpt", None) is not None:
-            from collections import OrderedDict
-            new_statedict = OrderedDict()
-            ckpt_statedict = kwargs.get("ckpt").model.state_dict()
-
-            if kwargs.get("backbone", None) is not None:                
+            if kwargs.get("backbone", None) is not None:
+                from collections import OrderedDict
+                new_statedict = OrderedDict()
+                ckpt_statedict = kwargs.get("ckpt").model.state_dict()         
                 for i in range(22, 8, -1):
                     for k, v in ckpt_statedict.items():
                         if k.startswith(f"{i}."):
@@ -715,10 +715,10 @@ class CustomModel(BaseModel):
                     for k, v in ckpt_statedict.items():
                         if k.startswith(f"{i}."):
                             new_statedict[k] = v
+                self.model.load_state_dict(new_statedict, strict=False)  
             else:
-                new_statedict = ckpt_statedict
-                        
-            self.model.load_state_dict(new_statedict, strict=False)      
+                self.model = kwargs.get("ckpt").model
+   
 
         self.stride = torch.Tensor([1])  # no stride constraints
         self.names = {i: f"{i}" for i in range(self.yaml["nc"])}  # default names dict
@@ -727,11 +727,11 @@ class CustomModel(BaseModel):
             self.inplace = self.yaml.get("inplace", True)
             
             # Build strides
-            m = self.model[-1]  # Detect()
+            m = self.model[23]  # Detect()
             if isinstance(m, Detect):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
                 s = 256  # 2x min stride
                 m.inplace = self.inplace
-                forward = lambda x: self.forward(x)[0] if isinstance(m, (Segment, Pose, OBB)) else self.forward(x)
+                forward = lambda x: self.forward(x)
                 m.stride = torch.tensor([s / x.shape[-2] for x in forward(torch.zeros(1, ch, s, s))])  # forward
                 self.stride = m.stride
                 m.bias_init()  # only run once
@@ -743,7 +743,7 @@ class CustomModel(BaseModel):
             
     def init_criterion(self):
         if self.kwargs['branch'].startswith('detect'):
-            return v8DetectionLoss(self)
+            return v8DetectionLoss(self, **self.kwargs)
         else:
             return v8ClassificationLoss()
 
@@ -847,10 +847,13 @@ def torch_safe_load(weight, *args, **kwargs):
         ckpt = {"model": ckpt.model}
 
     if kwargs.get("task", None) is not None and kwargs.get("task", None) == "custom":
-        scale = guess_model_scale(weight)
-        yaml = f"yolov8{scale}-custom.yaml"
-        model = CustomModel(cfg=yaml, ckpt=ckpt["model"], *args, **kwargs)
-        ckpt = {"model": model}
+        if kwargs.get("backbone", None) is not None:
+            model_scale = guess_model_scale(weight)
+        else:
+            model_scale = ckpt["model_scale"]
+        yaml = f"yolov8{model_scale}-custom.yaml"
+        model = CustomModel(cfg=yaml, ckpt=ckpt["model"], verbose=False, model_scale=model_scale, *args, **kwargs)
+        ckpt["model"] = model
 
     return ckpt, file  # load
 

@@ -373,7 +373,7 @@ class BaseTrainer:
                     self.tloss = (
                         (self.tloss * i + self.loss_items) / (i + 1) if self.tloss is not None else self.loss_items
                     )
-                return
+
                 # Backward
                 self.scaler.scale(self.loss).backward()
 
@@ -484,6 +484,7 @@ class BaseTrainer:
                 "version": __version__,
                 "license": "AGPL-3.0 (https://ultralytics.com/license)",
                 "docs": "https://docs.ultralytics.com",
+                "model_scale": self.model.model_scale
             },
             buffer,
         )
