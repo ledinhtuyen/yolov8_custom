@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import ConcatDataset
+from torch.utils.data.dataset import Dataset
 
 from ultralytics.utils import LOCAL_RANK, NUM_THREADS, TQDM, colorstr
 from ultralytics.utils.ops import resample_segments
@@ -36,6 +37,8 @@ from .utils import (
     verify_image,
     verify_image_label,
 )
+
+from typing import Iterable
 
 # Ultralytics dataset *.cache version, >= 1.0.0 for YOLOv8
 DATASET_CACHE_VERSION = "1.0.3"
@@ -83,6 +86,7 @@ class YOLODataset(BaseDataset):
                 "keypoints, number of dims (2 for x,y or 3 for x,y,visible)], i.e. 'kpt_shape: [17, 3]'"
             )
         with ThreadPool(NUM_THREADS) as pool:
+            len_data_names = len(self.data["names"]) if hasattr(self.data, "names") else len(self.data["names_det"])
             results = pool.imap(
                 func=verify_image_label,
                 iterable=zip(
@@ -90,7 +94,7 @@ class YOLODataset(BaseDataset):
                     self.label_files,
                     repeat(self.prefix),
                     repeat(self.use_keypoints),
-                    repeat(len(self.data["names"])),
+                    repeat(len_data_names),
                     repeat(nkpt),
                     repeat(ndim),
                 ),
@@ -233,9 +237,9 @@ class YOLODataset(BaseDataset):
         values = list(zip(*[list(b.values()) for b in batch]))
         for i, k in enumerate(keys):
             value = values[i]
-            if k == "img":
+            if k in {"img"}:
                 value = torch.stack(value, 0)
-            if k in {"masks", "keypoints", "bboxes", "cls", "segments", "obb"}:
+            if k in {"masks", "keypoints", "bboxes", "cls", "segments", "obb", "data_type", "cls_img"}:
                 value = torch.cat(value, 0)
             new_batch[k] = value
         new_batch["batch_idx"] = list(new_batch["batch_idx"])
@@ -355,6 +359,15 @@ class YOLOConcatDataset(ConcatDataset):
 
     This class is useful to assemble different existing datasets.
     """
+    def __init__(self, datasets: Iterable[Dataset]) -> None:
+        self.labels = []
+
+        # Only get labels for detection dataset
+        for dataset in datasets:
+            if hasattr(dataset, "labels"):
+                self.labels.extend(dataset.labels)
+                break
+        super().__init__(datasets)
 
     @staticmethod
     def collate_fn(batch):
@@ -421,13 +434,12 @@ class ClassificationDataset:
             self.root = self.base.root
         else:
             samples = []
-            prefix_path = args.prefix_path
             
             # Loop for dictionary with index
             for i, (k, v) in enumerate(root.items()):
                 # Loop for each image
                 for img in v:
-                    samples.append((f"{prefix_path}/{img}", i))
+                    samples.append((f"{img}", i))
             self.samples = samples
             self.root = Path(args.save_dir)
         
@@ -515,3 +527,126 @@ class ClassificationDataset:
         x["msgs"] = msgs  # warnings
         save_dataset_cache_file(self.prefix, path, x, DATASET_CACHE_VERSION)
         return samples
+
+class CustomClsDataset(BaseDataset):
+    def __init__(self, cfg, data, augment=False, prefix="", data_name="", *args, **kwargs):
+        """Initializes a CustomClsDataset object."""
+        self.data = data
+        self.augment = augment
+        self.args = cfg
+        self.data_name = data_name
+        self.mode = prefix
+        
+        self.samples = []
+        # Loop for dictionary with index
+        for i, (k, v) in enumerate(data.items()):
+            # Loop for each image
+            for img in v:
+                self.samples.append((f"{img}", i))
+        
+        # Initialize attributes
+        if augment and self.args.fraction < 1.0:  # reduce training fraction
+            self.samples = self.samples[: round(len(self.samples) * self.args.fraction)]
+        self.prefix = colorstr(f"{prefix}: ") if prefix else ""
+        self.cache_ram = self.args.cache is True or str(self.args.cache).lower() == "ram"  # cache images into RAM
+        self.cache_disk = str(self.args.cache).lower() == "disk"  # cache images on hard drive as uncompressed *.npy files
+        self.samples = self.verify_images()  # filter out bad images
+        self.samples = [list(x) + [Path(x[0]).with_suffix(".npy"), None] for x in self.samples]  # file, index, npy, im
+
+        self.labels = self.samples
+        
+        self.transforms = self.build_transforms()
+
+    def build_transforms(self, hyp=None):
+        scale = (1.0 - self.args.scale, 1.0)  # (0.08, 1.0)
+        transforms = (
+            classify_augmentations(
+                size=self.args.imgsz,
+                scale=scale,
+                hflip=self.args.fliplr,
+                vflip=self.args.flipud,
+                erasing=self.args.erasing,
+                auto_augment=self.args.auto_augment,
+                hsv_h=self.args.hsv_h,
+                hsv_s=self.args.hsv_s,
+                hsv_v=self.args.hsv_v,
+            )
+            if self.augment
+            else classify_transforms(size=self.args.imgsz, crop_fraction=self.args.crop_fraction)
+        )
+
+        return transforms
+
+    def verify_images(self):
+        """Verify all images in dataset."""
+        desc = f"{self.prefix}Scanning {self.data_name}..."
+        path = Path(f"{self.args.save_dir}/{self.mode}_{self.data_name}.cache")  # *.cache file path
+
+        with contextlib.suppress(FileNotFoundError, AssertionError, AttributeError):
+            cache = load_dataset_cache_file(path)  # attempt to load a *.cache file
+            assert cache["version"] == DATASET_CACHE_VERSION  # matches current version
+            assert cache["hash"] == get_hash([x[0] for x in self.samples])  # identical hash
+            nf, nc, n, samples = cache.pop("results")  # found, missing, empty, corrupt, total
+            if LOCAL_RANK in {-1, 0}:
+                d = f"{desc} {nf} images, {nc} corrupt"
+                TQDM(None, desc=d, total=n, initial=n)
+                if cache["msgs"]:
+                    LOGGER.info("\n".join(cache["msgs"]))  # display warnings
+            return samples
+
+        # Run scan if *.cache retrieval failed
+        nf, nc, msgs, samples, x = 0, 0, [], [], {}
+        with ThreadPool(NUM_THREADS) as pool:
+            results = pool.imap(func=verify_image, iterable=zip(self.samples, repeat(self.prefix)))
+            pbar = TQDM(results, desc=desc, total=len(self.samples))
+            for sample, nf_f, nc_f, msg in pbar:
+                if nf_f:
+                    samples.append(sample)
+                if msg:
+                    msgs.append(msg)
+                nf += nf_f
+                nc += nc_f
+                pbar.desc = f"{desc} {nf} images, {nc} corrupt"
+            pbar.close()
+        if msgs:
+            LOGGER.info("\n".join(msgs))
+        x["hash"] = get_hash([x[0] for x in self.samples])
+        x["results"] = nf, nc, len(samples), samples
+        x["msgs"] = msgs  # warnings
+        save_dataset_cache_file(self.prefix, path, x, DATASET_CACHE_VERSION)
+        return samples
+
+    def get_image_and_label(self, index):
+        """Get image and label from dataset."""
+        f, j, fn, im = self.samples[index]
+        if self.cache_ram:
+            if im is None:  # Warning: two separate if statements required here, do not combine this with previous line
+                im = self.samples[index][3] = cv2.imread(f)
+        elif self.cache_disk:
+            if not fn.exists():  # load npy
+                np.save(fn.as_posix(), cv2.imread(f), allow_pickle=False)
+            im = np.load(fn)
+        else:  # read image
+            im = cv2.imread(f)  # BGR
+        # Convert NumPy array to PIL image
+        im = Image.fromarray(cv2.cvtColor(im, cv2.COLOR_BGR2RGB))
+        
+        label = {
+            "im_file": f,
+            "ori_shape": im.size,
+            "resized_shape": (self.args.imgsz, self.args.imgsz),
+            "img": im,
+            "cls": torch.Tensor([[j-100.0]]).float(),
+            "bboxes": torch.Tensor([[-1.0, -1.0, -1.0, -1.0]]).float(),
+            "batch_idx": torch.Tensor([index]).float(),
+            "data_type": torch.Tensor([1]).float(),
+            "cls_img": torch.Tensor([j]).long()
+        }
+
+        return label
+
+    def __getitem__(self, index):
+        label = self.get_image_and_label(index)
+        img_transformed = self.transforms(label["img"])
+        label["img"] = img_transformed
+        return label

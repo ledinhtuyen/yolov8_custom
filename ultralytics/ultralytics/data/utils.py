@@ -422,6 +422,51 @@ def check_cls_dataset(dataset, split=""):
 
     return {"train": train_set, "val": val_set, "test": test_set, "nc": nc, "names": names}
 
+def check_custom_dataset(dataset, prefix_path=None):
+    data = yaml_load(dataset)
+                
+    import json
+    import os
+
+    data_vtgp = {
+                    "train": {}, 
+                    "val": {}
+                }
+    data_vtgp_json = json.load(open(data["train_val_vtgp"]))
+    
+    for k, v in data_vtgp_json.items():
+        if k != "metadata":
+            data_vtgp["train"][k] = v["train"]
+            data_vtgp["val"][k] = v["test"]
+            
+            # Add prefix path
+            data_vtgp["train"][k] = [os.path.join(prefix_path, x) for x in data_vtgp["train"][k]]
+            data_vtgp["val"][k] = [os.path.join(prefix_path, x) for x in data_vtgp["val"][k]]
+            
+    # Sort the names
+    data_vtgp["train"] = dict(sorted(data_vtgp["train"].items()))
+    data_vtgp["val"] = dict(sorted(data_vtgp["val"].items()))
+
+    data_ret =  {
+                    "train": 
+                        {
+                            "train_det" : data["train_det"],
+                            "train_vtgp": data_vtgp["train"]
+                        },
+                    "val":
+                        {
+                            "val_det" : data["val_det"],
+                            "val_vtgp": data_vtgp["val"]
+                        }
+                }
+
+    data_ret["names_det"] = data["names_det"]
+    data_ret["names_vtgp"] = data["names_vtgp"]
+    
+    data_ret["nc"] = len(data["names_det"])
+    data_ret["nc_vtgp"] = len(data["names_vtgp"])
+
+    return data_ret
 
 class HUBDatasetStats:
     """

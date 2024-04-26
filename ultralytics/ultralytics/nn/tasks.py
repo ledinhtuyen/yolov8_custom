@@ -77,11 +77,6 @@ class BaseModel(nn.Module):
     def __init__(self, *args, **kwargs):
         """Initialize the BaseModel class."""
         super().__init__()
-        if kwargs.get("task", None) is not None and kwargs.get("task") == "custom":
-            if kwargs.get("branch", None) is not None:
-                self.branch = kwargs.get("branch")
-            else:
-                raise ValueError("branch not specified. Must specify branch in function arguments.")
 
     def forward(self, x, *args, **kwargs):
         """
@@ -97,7 +92,7 @@ class BaseModel(nn.Module):
             return self.loss(x, *args, **kwargs)
         return self.predict(x, *args, **kwargs)
 
-    def predict(self, x, profile=False, visualize=False, augment=False, embed=None):
+    def predict(self, x, profile=False, visualize=False, augment=False, embed=None, data_type=None):
         """
         Perform a forward pass through the network.
 
@@ -113,9 +108,9 @@ class BaseModel(nn.Module):
         """
         if augment:
             return self._predict_augment(x)
-        return self._predict_once(x, profile, visualize, embed)
+        return self._predict_once(x, profile, visualize, embed, data_type)
 
-    def _predict_once(self, x, profile=False, visualize=False, embed=None):
+    def _predict_once(self, x, profile=False, visualize=False, embed=None, data_type=None):
         """
         Perform a forward pass through the network.
 
@@ -128,34 +123,44 @@ class BaseModel(nn.Module):
         Returns:
             (torch.Tensor): The last output of the model.
         """
+        
         y, dt, embeddings = [], [], []  # outputs
         for i, m in enumerate(self.model):
-            if hasattr(self, "branch"):
-                if self.branch == "detect":
-                    if i == 24 or i == 25:
-                        y.append(0)
-                        continue
-                elif self.branch == "cls_vtgp":
-                    if i >= 10 and i <= 23 or i == 25:
-                        y.append(0)
-                        continue
-                elif self.branch == "cls_quality":
-                    if i >= 10 and i <= 24:
-                        y.append(0)
-                        continue
             if m.f != -1:  # if not from previous layer
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
             if profile:
                 self._profile_one_layer(m, x, dt)
-            x = m(x)  # run
-            y.append(x if m.i in self.save else None)  # save output
+            if data_type is not None:
+                if i == 12 or i == 15:
+                    x_f = x[1][data_type == 0]
+                    x = m([x[0], x_f])
+                elif i == 9:
+                    x = m(x, data_type)
+                    x0, x1 = x
+                    y.append(x0)  # save output
+                    continue
+                elif i == 10:
+                    x = m(x0)
+                elif i == 24:
+                    x = m(x1)
+                elif i == 25:
+                    continue
+                else:
+                    x = m(x)
+            else:
+                x = m(x) # run
+            y.append(x)  # save output
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
             if embed and m.i in embed:
                 embeddings.append(nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
                 if m.i == max(embed):
                     return torch.unbind(torch.cat(embeddings, 1), dim=0)
-        return x
+        if data_type is not None:
+            print(y[23][0])
+            return y[23], y[24]
+        else:
+            return x
 
     def _predict_augment(self, x):
         """Perform augmentations on input image x and return augmented inference."""
@@ -285,8 +290,33 @@ class BaseModel(nn.Module):
         if not hasattr(self, "criterion"):
             self.criterion = self.init_criterion()
 
-        preds = self.forward(batch["img"]) if preds is None else preds
-        return self.criterion(preds, batch)
+        preds = self.forward(batch["img"], data_type=batch["data_type"]) if preds is None else preds
+        if isinstance(preds, tuple):
+            batch_det, batch_vtgp = {}, {}
+
+            idx_det = batch["cls"] >= 0
+            idx_det = idx_det.squeeze()
+            
+            idx_vtgp = batch["cls_img"] >= 0
+            idx_vtgp = idx_vtgp.squeeze()
+            
+            batch_det["cls"] = batch["cls"][idx_det]
+            batch_det["batch_idx"] = batch["batch_idx"][idx_det]
+            
+            batch_det["bboxes"] = batch["bboxes"][idx_det]
+
+            batch_vtgp["cls"] = batch["cls_img"][idx_vtgp]
+            
+            loss_det, loss_det_item = v8DetectionLoss(self)(preds[0], batch_det)
+
+            loss_vtgp, loss_vtgp_item = v8ClassificationLoss()(preds[1], batch_vtgp)
+            
+            loss = loss_det + loss_vtgp
+            loss_item = torch.cat([loss_det_item, loss_vtgp_item.unsqueeze(0)], 0)
+            
+            return loss, loss_item
+        else:
+            return self.criterion(preds, batch)
 
     def init_criterion(self):
         """Initialize the loss criterion for the BaseModel."""
@@ -688,6 +718,8 @@ class CustomModel(BaseModel):
         self._from_yaml(cfg, ch, nc, verbose, *args, **kwargs)
         self.model_scale = kwargs.get("model_scale", "n")
         self.kwargs = kwargs
+        self.nc_vtgp = 10
+        self.names_vtgp = {}
 
     def _from_yaml(self, cfg, ch, nc, verbose, *args, **kwargs):
         self.yaml = cfg if isinstance(cfg, dict) else yaml_model_load(cfg)  # cfg dict
@@ -723,29 +755,19 @@ class CustomModel(BaseModel):
         self.stride = torch.Tensor([1])  # no stride constraints
         self.names = {i: f"{i}" for i in range(self.yaml["nc"])}  # default names dict
 
-        if kwargs['branch'].startswith("detect"):
-            self.inplace = self.yaml.get("inplace", True)
-            
-            # Build strides
-            m = self.model[23]  # Detect()
-            if isinstance(m, Detect):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
-                s = 256  # 2x min stride
-                m.inplace = self.inplace
-                forward = lambda x: self.forward(x)
-                m.stride = torch.tensor([s / x.shape[-2] for x in forward(torch.zeros(1, ch, s, s))])  # forward
-                self.stride = m.stride
-                m.bias_init()  # only run once
-            else:
-                self.stride = torch.Tensor([32])  # default stride for i.e. RTDETR
+        self.inplace = self.yaml.get("inplace", True)
+        # Build strides
+        m = self.model[23]  # Detect()
+        m.inplace = self.inplace
+        m.stride = torch.tensor([8.0, 16.0, 32.0])  # forward
+        self.stride = m.stride
+        m.bias_init()  # only run once
 
-            # Init weights, biases
-            initialize_weights(self)
+        # Init weights, biases
+        initialize_weights(self)
             
     def init_criterion(self):
-        if self.kwargs['branch'].startswith('detect'):
-            return v8DetectionLoss(self, **self.kwargs)
-        else:
-            return v8ClassificationLoss()
+        return {"det_loss": v8DetectionLoss(self), "vtgp_loss": v8ClassificationLoss()}
 
 # Functions ------------------------------------------------------------------------------------------------------------
 

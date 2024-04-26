@@ -21,7 +21,7 @@ from torch import distributed as dist
 from torch import nn, optim
 
 from ultralytics.cfg import get_cfg, get_save_dir
-from ultralytics.data.utils import check_cls_dataset, check_det_dataset
+from ultralytics.data.utils import check_cls_dataset, check_det_dataset, check_custom_dataset
 from ultralytics.nn.tasks import attempt_load_one_weight, attempt_load_weights
 from ultralytics.utils import (
     DEFAULT_CFG,
@@ -280,7 +280,13 @@ class BaseTrainer:
                 self.testset, batch_size=batch_size if self.args.task == "obb" else batch_size * 2, rank=-1, mode="val"
             )
             self.validator = self.get_validator()
-            metric_keys = self.validator.metrics.keys + self.label_loss_items(prefix="val")
+            if self.args.task == "custom":
+                metric_keys = []
+                for k, v in self.validator.items():
+                    metric_keys += v.metrics.keys
+                metric_keys += self.label_loss_items(prefix="val")
+            else:
+                metric_keys = self.validator.metrics.keys + self.label_loss_items(prefix="val")
             self.metrics = dict(zip(metric_keys, [0] * len(metric_keys)))
             self.ema = ModelEMA(self.model)
             if self.args.plots:
@@ -506,6 +512,8 @@ class BaseTrainer:
         try:
             if self.args.task == "classify":
                 data = check_cls_dataset(self.args.data)
+            elif self.args.task == "custom":
+                data = check_custom_dataset(self.args.data, self.args.prefix_path)
             elif self.args.data.split(".")[-1] in {"yaml", "yml"} or self.args.task in {
                 "detect",
                 "segment",
@@ -515,25 +523,6 @@ class BaseTrainer:
                 data = check_det_dataset(self.args.data)
                 if "yaml_file" in data:
                     self.args.data = data["yaml_file"]  # for validating 'yolo train data=url.zip' usage
-            elif self.args.data.split(".")[-1] in {"json"} and self.args.task == "custom":
-                import json
-                
-                data = {"train": {}, "test": {}}
-                data_json = json.load(open(self.args.data))
-                
-                for k, v in data_json.items():
-                    if k != "metadata":
-                        data["train"][k] = v["train"]
-                        data["test"][k] = v["test"]
-                
-                # Sort the names
-                data["train"] = dict(sorted(data["train"].items()))
-                data["test"] = dict(sorted(data["test"].items()))
-                data["nc"] = len(data["train"])
-                
-                # Class names to idx
-                names_list = sorted(list(data["train"].keys()))
-                data["names"] = {i: v for i, v in enumerate(names_list)}
         except Exception as e:
             raise RuntimeError(emojis(f"Dataset '{clean_url(self.args.data)}' error ❌ {e}")) from e
         self.data = data

@@ -246,7 +246,6 @@ class Model(nn.Module):
             self.ckpt_path = self.model.pt_path
             if task == "custom":
                 self.task = task
-                self.branch = kwargs.get("branch")
                 self.overrides["task"] = self.model.args["task"] = task
         else:
             weights = checks.check_file(weights)  # runs in all cases, not redundant with above call
@@ -649,12 +648,10 @@ class Model(nn.Module):
 
         overrides = yaml_load(checks.check_yaml(kwargs["cfg"])) if kwargs.get("cfg") else self.overrides
 
-        if self.task == "custom":
-            self.branch_type = "classify" if self.branch.startswith("cls") else "detect"
+        if self.task != "custom":
+            task2data = TASK2DATA[self.task]
         else:
-            self.branch_type = self.task
-
-        task2data = TASK2DATA[self.branch_type]
+            task2data = None
         custom = {"data": DEFAULT_CFG_DICT["data"] or task2data}  # method defaults
         args = {**overrides, **custom, **kwargs, "mode": "train"}  # highest priority args on the right
         if args.get("resume"):
@@ -662,8 +659,8 @@ class Model(nn.Module):
 
         self.trainer = (trainer or self._smart_load("trainer"))(overrides=args, _callbacks=self.callbacks)
         if not args.get("resume"):  # manually set model only if not resuming
-            if hasattr(self, "branch"):
-                self.trainer.model = self.trainer.get_model(weights=self.model if self.ckpt else None, cfg=self.model.yaml, branch=self.branch, task=self.task, model_scale=self.model.model_scale if self.ckpt else "n")
+            if self.task == "custom":
+                self.trainer.model = self.trainer.get_model(weights=self.model if self.ckpt else None, cfg=self.model.yaml, task=self.task, model_scale=self.model.model_scale if self.ckpt else "n")
             else:
                 self.trainer.model = self.trainer.get_model(weights=self.model if self.ckpt else None, cfg=self.model.yaml)
             self.model = self.trainer.model
