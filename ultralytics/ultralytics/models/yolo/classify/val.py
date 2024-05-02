@@ -43,8 +43,8 @@ class ClassificationValidator(BaseValidator):
 
     def init_metrics(self, model):
         """Initialize confusion matrix, class names, and top-1 and top-5 accuracy."""
-        self.names = model.names
-        self.nc = len(model.names)
+        self.names = model.names_vtgp
+        self.nc = len(model.names_vtgp)
         self.confusion_matrix = ConfusionMatrix(nc=self.nc, conf=self.args.conf, task="classify")
         self.pred = []
         self.targets = []
@@ -53,7 +53,7 @@ class ClassificationValidator(BaseValidator):
         """Preprocesses input batch and returns it."""
         batch["img"] = batch["img"].to(self.device, non_blocking=True)
         batch["img"] = batch["img"].half() if self.args.half else batch["img"].float()
-        batch["cls"] = batch["cls"].to(self.device)
+        batch["cls"] = batch["cls_img"].to(self.device)
         return batch
 
     def update_metrics(self, preds, batch):
@@ -99,7 +99,7 @@ class ClassificationValidator(BaseValidator):
             images=batch["img"],
             batch_idx=torch.arange(len(batch["img"])),
             cls=batch["cls"].view(-1),  # warning: use .view(), not .squeeze() for Classify models
-            fname=self.save_dir / f"val_batch{ni}_labels.jpg",
+            fname=self.save_dir / f"val_batch{ni}_vtgp_labels.jpg",
             names=self.names,
             on_plot=self.on_plot,
         )
@@ -110,7 +110,7 @@ class ClassificationValidator(BaseValidator):
             batch["img"],
             batch_idx=torch.arange(len(batch["img"])),
             cls=torch.argmax(preds, dim=1),
-            fname=self.save_dir / f"val_batch{ni}_pred.jpg",
+            fname=self.save_dir / f"val_batch{ni}_vtgp_pred.jpg",
             names=self.names,
             on_plot=self.on_plot,
         )  # pred

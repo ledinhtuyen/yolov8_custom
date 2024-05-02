@@ -46,7 +46,9 @@ class SwitchHead(nn.Module):
 
     def forward(self, x, data_type=None):
         if data_type is not None:
-            return x[data_type == 0], x[data_type == 1]
+            idx = data_type == 0
+            idx = idx.squeeze()
+            return x[idx], x[~idx]
 
 class DFL(nn.Module):
     """

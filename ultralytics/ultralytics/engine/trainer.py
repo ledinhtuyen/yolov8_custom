@@ -404,7 +404,7 @@ class BaseTrainer:
                 losses = self.tloss if loss_len > 1 else torch.unsqueeze(self.tloss, 0)
                 if RANK in {-1, 0}:
                     pbar.set_description(
-                        ("%11s" * 2 + "%11.4g" * (2 + loss_len))
+                        ("%14s" * 2 + "%14g" * (2 + loss_len))
                         % (f"{epoch + 1}/{self.epochs}", mem, *losses, batch["cls"].shape[0], batch["img"].shape[-1])
                     )
                     self.run_callbacks("on_batch_end")
@@ -498,7 +498,13 @@ class BaseTrainer:
 
         # Save checkpoints
         self.last.write_bytes(serialized_ckpt)  # save last.pt
-        if self.best_fitness == self.fitness:
+        # if self.best_fitness == self.fitness:
+        all_same = True
+        for k, v in self.fitness.items():
+            if self.best_fitness[k] != v:
+                all_same = False
+                break
+        if all_same:
             self.best.write_bytes(serialized_ckpt)  # save best.pt
         if (self.save_period > 0) and (self.epoch > 0) and (self.epoch % self.save_period == 0):
             (self.wdir / f"epoch{self.epoch}.pt").write_bytes(serialized_ckpt)  # save epoch, i.e. 'epoch3.pt'
@@ -566,11 +572,34 @@ class BaseTrainer:
 
         The returned dict is expected to contain "fitness" key.
         """
-        metrics = self.validator(self)
-        fitness = metrics.pop("fitness", -self.loss.detach().cpu().numpy())  # use loss as fitness measure if not found
-        if not self.best_fitness or self.best_fitness < fitness:
-            self.best_fitness = fitness
-        return metrics, fitness
+        if self.args.task != "custom":
+            metrics = self.validator(self)
+            fitness = metrics.pop("fitness", -self.loss.detach().cpu().numpy())  # use loss as fitness measure if not found
+            if not self.best_fitness or self.best_fitness < fitness:
+                self.best_fitness = fitness
+            return metrics, fitness
+        else:
+            metrics = {}
+            fitness = {}
+            for k, v in self.validator.items():
+                metrics[k] = v(self)
+                fitness[k] = metrics[k].pop("fitness", -self.loss.detach().cpu().numpy())
+            
+            # Dictionary metrics unpacking
+            metrics = {k1: v1 for k, v in metrics.items() for k1, v1 in v.items()}
+            if not self.best_fitness:
+                self.best_fitness = fitness
+            else:
+                all_less = True
+                for k, v in fitness.items():
+                    if self.best_fitness[k] >= v:
+                        all_less = False
+                        break
+                if all_less:
+                    self.best_fitness = fitness
+            
+            return metrics, fitness
+                
 
     def get_model(self, cfg=None, weights=None, verbose=True):
         """Get model and raise NotImplementedError for loading cfg files."""

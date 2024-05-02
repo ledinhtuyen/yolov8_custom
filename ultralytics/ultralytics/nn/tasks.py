@@ -125,27 +125,49 @@ class BaseModel(nn.Module):
         """
         
         y, dt, embeddings = [], [], []  # outputs
+
+        if data_type is not None:
+            idx = data_type == 0
+            idx = idx.squeeze()
+            invert_idx = ~idx
+            check_det = len(x[idx])
+            check_vtgp = len(x[invert_idx])
+            flag = -1 # 0: training, 1: val_det, 2: val_vtgp
+
+            if check_det > 0 and check_vtgp > 0:
+                flag = 0
+            elif check_det > 0:
+                flag = 1
+            elif check_vtgp > 0:
+                flag = 2
+        
         for i, m in enumerate(self.model):
             if m.f != -1:  # if not from previous layer
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
             if profile:
                 self._profile_one_layer(m, x, dt)
-            if data_type is not None:
-                if i == 12 or i == 15:
-                    x_f = x[1][data_type == 0]
-                    x = m([x[0], x_f])
-                elif i == 9:
+            if data_type is not None:              
+                if i == 9:
                     x = m(x, data_type)
                     x0, x1 = x
                     y.append(x0)  # save output
                     continue
-                elif i == 10:
+                elif i == 10 and (flag == 0 or flag == 1):
                     x = m(x0)
+                elif (i == 12 or i == 15) and (flag == 0 or flag == 1):
+                    x_f = x[1][idx]
+                    x = m([x[0], x_f])
                 elif i == 24:
-                    x = m(x1)
+                    if (flag == 0 or flag == 2):
+                        x = m(x1)
+                    elif flag == 1:
+                        continue
                 elif i == 25:
                     continue
                 else:
+                    if flag == 2 and i >= 10 and i < 24:
+                        y.append(0)
+                        continue
                     x = m(x)
             else:
                 x = m(x) # run
@@ -157,8 +179,12 @@ class BaseModel(nn.Module):
                 if m.i == max(embed):
                     return torch.unbind(torch.cat(embeddings, 1), dim=0)
         if data_type is not None:
-            print(y[23][0])
-            return y[23], y[24]
+            if flag == 0:
+                return y[23], y[24]
+            elif flag == 1:
+                return y[23], torch.tensor([])
+            elif flag == 2:
+                return torch.tensor([]), y[24]
         else:
             return x
 
@@ -294,26 +320,35 @@ class BaseModel(nn.Module):
         if isinstance(preds, tuple):
             batch_det, batch_vtgp = {}, {}
 
-            idx_det = batch["cls"] >= 0
-            idx_det = idx_det.squeeze()
+            idx_det = batch["cls_img"] < 0
+            idx_vtgp = ~idx_det
             
-            idx_vtgp = batch["cls_img"] >= 0
-            idx_vtgp = idx_vtgp.squeeze()
+            check_det = len(batch["img"][idx_det.to(batch["img"].device)])
+            check_vtgp = len(batch["img"][idx_vtgp.to(batch["img"].device)])
             
-            batch_det["cls"] = batch["cls"][idx_det]
-            batch_det["batch_idx"] = batch["batch_idx"][idx_det]
+            loss, loss_item = 0, torch.tensor([], device=batch["img"].device)
             
-            batch_det["bboxes"] = batch["bboxes"][idx_det]
+            if check_det > 0:
+                batch_det["cls"] = batch["cls"][batch["cls"].squeeze() >= 0]
+                batch_det["batch_idx"] = batch["batch_idx"][batch["cls"].squeeze() >= 0]
+                batch_det["bboxes"] = batch["bboxes"][batch["cls"].squeeze() >= 0]
+                
+                loss_, loss_item_ = v8DetectionLoss(self)(preds[0], batch_det)
+                loss += loss_
+                loss_item = torch.cat((loss_item, loss_item_))
+            else:
+                loss_item = torch.cat((loss_item, torch.zeros(3, device=batch["img"].device)))
 
-            batch_vtgp["cls"] = batch["cls_img"][idx_vtgp]
-            
-            loss_det, loss_det_item = v8DetectionLoss(self)(preds[0], batch_det)
+            if check_vtgp > 0:
+                batch_vtgp["cls"] = batch["cls_img"][idx_vtgp.to(batch["cls_img"].device)].to(batch["img"].device)
 
-            loss_vtgp, loss_vtgp_item = v8ClassificationLoss()(preds[1], batch_vtgp)
-            
-            loss = loss_det + loss_vtgp
-            loss_item = torch.cat([loss_det_item, loss_vtgp_item.unsqueeze(0)], 0)
-            
+                loss_, loss_item_ = v8ClassificationLoss()(preds[1], batch_vtgp)
+                loss += loss_
+                loss_item_.unsqueeze_(0)
+                loss_item = torch.cat((loss_item, loss_item_))
+            else:
+                loss_item = torch.cat((loss_item, torch.zeros(1, device=batch["img"].device)))
+
             return loss, loss_item
         else:
             return self.criterion(preds, batch)

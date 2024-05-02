@@ -995,7 +995,7 @@ class Format:
         if self.batch_idx:
             labels["batch_idx"] = torch.zeros(nl)
         
-        labels["data_type"] = torch.Tensor([0]).float()
+        labels["data_type"] = torch.Tensor([0]).float() # 0: detect, 1: vtgp
         labels["cls_img"] = torch.Tensor([-1]).long()
         return labels
 

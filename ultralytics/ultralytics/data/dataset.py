@@ -636,10 +636,10 @@ class CustomClsDataset(BaseDataset):
             "ori_shape": im.size,
             "resized_shape": (self.args.imgsz, self.args.imgsz),
             "img": im,
-            "cls": torch.Tensor([[j-100.0]]).float(),
+            "cls": torch.Tensor([[-1.0]]).float(),
             "bboxes": torch.Tensor([[-1.0, -1.0, -1.0, -1.0]]).float(),
             "batch_idx": torch.Tensor([index]).float(),
-            "data_type": torch.Tensor([1]).float(),
+            "data_type": torch.Tensor([1]).float(), # 0: detect, 1: vtgp
             "cls_img": torch.Tensor([j]).long()
         }
 
@@ -650,3 +650,7 @@ class CustomClsDataset(BaseDataset):
         img_transformed = self.transforms(label["img"])
         label["img"] = img_transformed
         return label
+    
+    @staticmethod
+    def collate_fn(batch):
+        return YOLODataset.collate_fn(batch)

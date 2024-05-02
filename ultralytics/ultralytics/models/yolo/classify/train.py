@@ -154,6 +154,6 @@ class ClassificationTrainer(BaseTrainer):
             images=batch["img"],
             batch_idx=torch.arange(len(batch["img"])),
             cls=batch["cls"].view(-1),  # warning: use .view(), not .squeeze() for Classify models
-            fname=self.save_dir / f"train_batch{ni}.jpg",
+            fname=self.save_dir / f"train_batch{ni}_cls.jpg",
             on_plot=self.on_plot,
         )

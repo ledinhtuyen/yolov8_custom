@@ -1,21 +1,18 @@
 import torch
 import torch.utils
 import torch.utils.data
-from torchvision.transforms import v2 as T
 
 from ultralytics.engine.trainer import BaseTrainer
 from ultralytics.nn.tasks import CustomModel
-from ultralytics.utils import RANK
+from ultralytics.utils import RANK, LOGGER, colorstr
 from ultralytics.models.yolo.detect.train import DetectionTrainer
 from ultralytics.models.yolo.classify.train import ClassificationTrainer
 from ultralytics.models import yolo
 from ultralytics.utils.torch_utils import torch_distributed_zero_first
 from ultralytics.data import build_dataloader
-
 from ultralytics.data.dataset import CustomClsDataset, YOLOConcatDataset
-
-DEFAULT_MEAN = torch.Tensor([0.485, 0.456, 0.406])
-DEFAULT_STD = torch.Tensor([0.229, 0.224, 0.225])
+from ultralytics.utils.torch_utils import strip_optimizer
+from ultralytics.utils.plotting import plot_results
 
 class CustomTrainer(BaseTrainer):
     def get_model(self, cfg=None, weights=None, verbose=True, *args, **kwargs):
@@ -81,14 +78,9 @@ class CustomTrainer(BaseTrainer):
         batch["img"] = batch["img"].float()
         
         idx_det = batch["data_type"] == 0
-        batch["img"][idx_det] = T.Compose([
-            T.ToImage(),
-            T.ToDtype(torch.float32, scale=True),
-            T.Normalize(mean=DEFAULT_MEAN, std=DEFAULT_STD),
-        ])(batch["img"][idx_det])
-        
-        batch["img"] = batch["img"].to(torch.float32)
+        batch["img"][idx_det] = batch["img"][idx_det].float() / 255.0
         batch["img"] = batch["img"].to(self.device, non_blocking=True)
+
         batch["cls_img"] = batch["cls_img"].to(self.device)
         return batch
 
@@ -103,24 +95,36 @@ class CustomTrainer(BaseTrainer):
         )
 
     def plot_training_samples(self, batch, ni):
-        # if self.kwargs['branch'].startswith("detect"):
-        #     return DetectionTrainer.plot_training_samples(self, batch, ni)
-        # elif self.kwargs['branch'].startswith("cls"):
-        #     return ClassificationTrainer.plot_training_samples(self, batch, ni)
-        pass
+        batch_det = {}
+        batch_vtgp = {}
+        
+        idx_det = batch["cls"].squeeze() >= 0
+        idx_vtgp = batch["cls_img"].squeeze() >= 0
+        
+        batch_det["img"] = batch["img"][~idx_vtgp]
+        batch_det["batch_idx"] = batch["batch_idx"][idx_det]
+        batch_det["cls"] = batch["cls"][idx_det]
+        batch_det["bboxes"] = batch["bboxes"][idx_det]
+        batch_det["im_file"] = []
+        for i in idx_det:
+            batch_det["im_file"].append(batch["im_file"][i])
+        
+        batch_vtgp["img"] = batch["img"][idx_vtgp]
+        batch_vtgp["cls"] = batch["cls_img"][idx_vtgp]
+        
+        DetectionTrainer.plot_training_samples(self, batch_det, ni)
+        ClassificationTrainer.plot_training_samples(self, batch_vtgp, ni)
 
     def plot_metrics(self):
-        if self.kwargs['branch'].startswith("detect"):
-            return DetectionTrainer.plot_metrics(self)
-        elif self.kwargs['branch'].startswith("cls"):
-            return ClassificationTrainer.plot_metrics(self)
+        plot_results(file=self.csv, on_plot=self.on_plot) 
         
     def label_loss_items(self, loss_items=None, prefix="train"):
         keys = [f"{prefix}/{x}" for x in self.loss_names]
-        if loss_items is None:
+        if loss_items is not None:
+            loss_items = [round(float(x), 5) for x in loss_items]  # convert tensors to 5 decimal place floats
+            return dict(zip(keys, loss_items))
+        else:
             return keys
-        loss_items = [round(float(loss_items), 5)]
-        return dict(zip(keys, loss_items))
 
     def plot_training_labels(self):
         """Create a labeled training plot of the YOLO model."""
@@ -132,7 +136,27 @@ class CustomTrainer(BaseTrainer):
         plot_labels(boxes, cls.squeeze(), names=self.data["names_det"], save_dir=self.save_dir, on_plot=self.on_plot)
     
     def final_eval(self):
-        if self.kwargs['branch'].startswith("detect"):
-            return DetectionTrainer.final_eval(self)
-        elif self.kwargs['branch'].startswith("cls"):
-            return ClassificationTrainer.final_eval(self)
+        """Performs final evaluation and validation for object detection YOLO model."""
+        for f in self.last, self.best:
+            if f.exists():
+                strip_optimizer(f)  # strip optimizers
+                if f is self.best:
+                    LOGGER.info(f"\nValidating {f}...")
+                    self.args.plots
+                    self.validator["val_det"].args.plots = self.args.plots
+                    self.metrics = self.validator["val_det"](model=f)
+                    self.metrics.pop("fitness", None)
+                    self.run_callbacks("on_fit_epoch_end")
+                    
+        """Evaluate trained model and save validation results."""
+        for f in self.last, self.best:
+            if f.exists():
+                strip_optimizer(f)  # strip optimizers
+                if f is self.best:
+                    LOGGER.info(f"\nValidating {f}...")
+                    self.validator["val_vtgp"].args.data = self.args.data
+                    self.validator["val_vtgp"].args.plots = self.args.plots
+                    self.metrics = self.validator["val_vtgp"](model=f)
+                    self.metrics.pop("fitness", None)
+                    self.run_callbacks("on_fit_epoch_end")
+        LOGGER.info(f"Results saved to {colorstr('bold', self.save_dir)}")

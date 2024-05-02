@@ -28,7 +28,7 @@ import numpy as np
 import torch
 
 from ultralytics.cfg import get_cfg, get_save_dir
-from ultralytics.data.utils import check_cls_dataset, check_det_dataset
+from ultralytics.data.utils import check_cls_dataset, check_det_dataset, check_custom_dataset
 from ultralytics.nn.autobackend import AutoBackend
 from ultralytics.utils import LOGGER, TQDM, callbacks, colorstr, emojis
 from ultralytics.utils.checks import check_imgsz
@@ -139,12 +139,15 @@ class BaseValidator:
                 self.args.batch = 1  # export.py models default to batch-size 1
                 LOGGER.info(f"Forcing batch=1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models")
 
-            if str(self.args.data).split(".")[-1] in {"yaml", "yml"}:
-                self.data = check_det_dataset(self.args.data)
+            if self.args.task == "custom":
+                self.data = check_custom_dataset(self.args.data, self.args.prefix_path)
+                model.add_attributes(names_vtgp=self.data["names_vtgp"], nc_vtgp=self.data["nc_vtgp"])
+            elif str(self.args.data).split(".")[-1] in {"yaml", "yml"}:
+                # self.data = check_det_dataset(self.args.data)
+                self.data = check_custom_dataset(self.args.data, self.args.prefix_path)
             elif self.args.task == "classify":
-                self.data = check_cls_dataset(self.args.data, split=self.args.split)
-            elif str(self.args.data).split(".")[-1] in {"json"} and self.args.task == "custom":
-                pass
+                # self.data = check_cls_dataset(self.args.data, split=self.args.split)
+                self.data = check_custom_dataset(self.args.data, self.args.prefix_path)
             else:
                 raise FileNotFoundError(emojis(f"Dataset '{self.args.data}' for task={self.args.task} not found ❌"))
 
@@ -156,7 +159,7 @@ class BaseValidator:
             self.dataloader = self.dataloader or self.get_dataloader(self.data.get(self.args.split), self.args.batch)
 
             model.eval()
-            model.warmup(imgsz=(1 if pt else self.args.batch, 3, imgsz, imgsz))  # warmup
+            # model.warmup(imgsz=(1 if pt else self.args.batch, 3, imgsz, imgsz))  # warmup
 
         self.run_callbacks("on_val_start")
         dt = (
@@ -177,7 +180,10 @@ class BaseValidator:
 
             # Inference
             with dt[1]:
-                preds = model(batch["img"], augment=augment)
+                if batch.get("data_type", None) is not None:
+                    preds = model(batch["img"], augment=augment, data_type=batch["data_type"])
+                else:
+                    preds = model(batch["img"], augment=augment)
 
             # Loss
             with dt[2]:
@@ -186,7 +192,10 @@ class BaseValidator:
 
             # Postprocess
             with dt[3]:
-                preds = self.postprocess(preds)
+                if len(batch["img"][batch["data_type"] == 0]) > 0:
+                    preds = self.postprocess(preds[0])
+                elif len(batch["img"][batch["data_type"] == 1]) > 0:
+                    preds = self.postprocess(preds[1])
 
             self.update_metrics(preds, batch)
             if self.args.plots and batch_i < 3:
