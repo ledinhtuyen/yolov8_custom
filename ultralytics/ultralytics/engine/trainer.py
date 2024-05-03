@@ -498,14 +498,10 @@ class BaseTrainer:
 
         # Save checkpoints
         self.last.write_bytes(serialized_ckpt)  # save last.pt
-        # if self.best_fitness == self.fitness:
-        all_same = True
         for k, v in self.fitness.items():
-            if self.best_fitness[k] != v:
-                all_same = False
-                break
-        if all_same:
-            self.best.write_bytes(serialized_ckpt)  # save best.pt
+            if k == "val_det":
+                if self.best_fitness[k] == v:
+                    self.best.write_bytes(serialized_ckpt) # save best.pt
         if (self.save_period > 0) and (self.epoch > 0) and (self.epoch % self.save_period == 0):
             (self.wdir / f"epoch{self.epoch}.pt").write_bytes(serialized_ckpt)  # save epoch, i.e. 'epoch3.pt'
 
@@ -585,20 +581,23 @@ class BaseTrainer:
                 metrics[k] = v(self)
                 fitness[k] = metrics[k].pop("fitness", -self.loss.detach().cpu().numpy())
             
+            new_metrics = {}
             # Dictionary metrics unpacking
-            metrics = {k1: v1 for k, v in metrics.items() for k1, v1 in v.items()}
+            for k, v in metrics.items():
+                for k1, v1 in v.items():
+                    if k1 in new_metrics:
+                        new_metrics[k1] += v1
+                    else:
+                        new_metrics[k1] = v1
+
             if not self.best_fitness:
                 self.best_fitness = fitness
             else:
-                all_less = True
                 for k, v in fitness.items():
-                    if self.best_fitness[k] >= v:
-                        all_less = False
-                        break
-                if all_less:
-                    self.best_fitness = fitness
+                    if k == "val_det" and self.best_fitness[k] < v:
+                        self.best_fitness[k] = v
             
-            return metrics, fitness
+            return new_metrics, fitness
                 
 
     def get_model(self, cfg=None, weights=None, verbose=True):
