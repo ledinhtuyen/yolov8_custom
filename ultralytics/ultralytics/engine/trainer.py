@@ -220,7 +220,6 @@ class BaseTrainer:
 
     def _setup_train(self, world_size):
         """Builds dataloaders and optimizer on correct rank process."""
-
         # Model
         self.run_callbacks("on_pretrain_routine_start")
         ckpt = self.setup_model()
@@ -530,7 +529,7 @@ class BaseTrainer:
         self.data = data
         if data.get("train_negative") is not None or data.get("positive_ratio") is not None:
             return {"positive" : data["train"], "negative" : data["train_negative"], "positive_ratio" : data['positive_ratio']}, data.get("val") or data.get("test")
-        else:
+        else:         
             return data["train"], data.get("val") or data.get("test")
 
     def setup_model(self):
@@ -687,6 +686,7 @@ class BaseTrainer:
                 ckpt_args = attempt_load_weights(last).args
                 if not Path(ckpt_args["data"]).exists():
                     ckpt_args["data"] = self.args.data
+                    ckpt_args["prefix_path"] = self.args.prefix_path
 
                 resume = True
                 self.args = get_cfg(ckpt_args)

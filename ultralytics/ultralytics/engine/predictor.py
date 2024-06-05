@@ -130,16 +130,25 @@ class BasePredictor:
         im = im.half() if self.model.fp16 else im.float()  # uint8 to fp16/32
         if not_tensor:
             im /= 255  # 0 - 255 to 0.0 - 1.0
-        return im
+        return im   
 
-    def inference(self, im, *args, **kwargs):
+    def inference(self, im, data_type = None, *args, **kwargs):
         """Runs inference on a given image using the specified model and arguments."""
         visualize = (
             increment_path(self.save_dir / Path(self.batch[0][0]).stem, mkdir=True)
             if self.args.visualize and (not self.source_type.tensor)
             else False
         )
-        return self.model(im, augment=self.args.augment, visualize=visualize, embed=self.args.embed, *args, **kwargs)
+        if data_type is not None:
+            # Shape of im is (b, 3, H, W)
+            # Shape of data_type is (b ,1)
+            batch_size = im.shape[0]
+            data_type_ = torch.zeros((1, batch_size)).to(self.device)
+            data_type_[0] = data_type
+            
+            return self.model(im, data_type=data_type_, augment=self.args.augment, visualize=visualize, embed=self.args.embed, *args, **kwargs)
+        else:
+            return self.model(im, augment=self.args.augment, visualize=visualize, embed=self.args.embed, *args, **kwargs)
 
     def pre_transform(self, im):
         """
@@ -159,12 +168,16 @@ class BasePredictor:
         """Post-processes predictions for an image and returns them."""
         return preds
 
-    def __call__(self, source=None, model=None, stream=False, *args, **kwargs):
+    def __call__(self, source=None, model=None, stream=False, data_type= None, *args, **kwargs):
         """Performs inference on an image or stream."""
         self.stream = stream
         if stream:
+            if data_type is not None:
+                return self.stream_inference(source, model, *args, **kwargs, data_type=data_type)
             return self.stream_inference(source, model, *args, **kwargs)
         else:
+            if data_type is not None:
+                return list(self.stream_inference(source, model, *args, **kwargs, data_type=data_type))
             return list(self.stream_inference(source, model, *args, **kwargs))  # merge list of Result into one
 
     def predict_cli(self, source=None, model=None):
@@ -186,7 +199,7 @@ class BasePredictor:
                 "transforms",
                 classify_transforms(self.imgsz[0], crop_fraction=self.args.crop_fraction),
             )
-            if self.args.task == "classify"
+            if self.args.task == "classify" or self.args.task == "custom"
             else None
         )
         self.dataset = load_inference_source(
@@ -206,7 +219,7 @@ class BasePredictor:
         self.vid_writer = {}
 
     @smart_inference_mode()
-    def stream_inference(self, source=None, model=None, *args, **kwargs):
+    def stream_inference(self, source=None, model=None, data_type= None, *args, **kwargs):
         """Streams real-time inference on camera feed and saves results to file."""
         if self.args.verbose:
             LOGGER.info("")
@@ -224,9 +237,9 @@ class BasePredictor:
                 (self.save_dir / "labels" if self.args.save_txt else self.save_dir).mkdir(parents=True, exist_ok=True)
 
             # Warmup model
-            if not self.done_warmup:
-                self.model.warmup(imgsz=(1 if self.model.pt or self.model.triton else self.dataset.bs, 3, *self.imgsz))
-                self.done_warmup = True
+            # if not self.done_warmup:
+            #     self.model.warmup(imgsz=(1 if self.model.pt or self.model.triton else self.dataset.bs, 3, *self.imgsz), data_type= data_type)
+            #     self.done_warmup = True
 
             self.seen, self.windows, self.batch = 0, [], None
             profilers = (
@@ -241,18 +254,27 @@ class BasePredictor:
 
                 # Preprocess
                 with profilers[0]:
-                    im = self.preprocess(im0s)
-
+                    if data_type is not None:
+                        im = self.preprocess(im0s, data_type=data_type)
+                    else:
+                        im = self.preprocess(im0s)
+                
                 # Inference
                 with profilers[1]:
-                    preds = self.inference(im, *args, **kwargs)
+                    if data_type is not None:
+                        preds = self.inference(im, data_type= data_type, *args, **kwargs)
+                    else:
+                        preds = self.inference(im, *args, **kwargs)
                     if self.args.embed:
                         yield from [preds] if isinstance(preds, torch.Tensor) else preds  # yield embedding tensors
                         continue
 
                 # Postprocess
                 with profilers[2]:
-                    self.results = self.postprocess(preds, im, im0s)
+                    if data_type is not None:
+                        self.results = self.postprocess(preds, im, im0s, data_type=data_type)
+                    else:
+                        self.results = self.postprocess(preds, im, im0s)
                 self.run_callbacks("on_predict_postprocess_end")
 
                 # Visualize, save, write results

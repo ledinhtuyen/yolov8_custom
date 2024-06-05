@@ -78,18 +78,19 @@ class BaseModel(nn.Module):
         """Initialize the BaseModel class."""
         super().__init__()
 
-    def forward(self, x, *args, **kwargs):
+    def forward(self, x, data_type = None, *args, **kwargs):
         """
         Forward pass of the model on a single scale. Wrapper for `_forward_once` method.
 
         Args:
             x (torch.Tensor | dict): The input image tensor or a dict including image tensor and gt labels.
-
         Returns:
             (torch.Tensor): The output of the network.
         """
         if isinstance(x, dict):  # for cases of training and validating while training.
             return self.loss(x, *args, **kwargs)
+        if data_type is not None:
+            return self.predict(x, *args, **kwargs, data_type= data_type)
         return self.predict(x, *args, **kwargs)
 
     def predict(self, x, profile=False, visualize=False, augment=False, embed=None, data_type=None):
@@ -128,7 +129,7 @@ class BaseModel(nn.Module):
 
         if data_type is not None:
             idx = data_type == 0
-            idx = idx.squeeze()
+            idx = idx.squeeze(0)
             invert_idx = ~idx
             check_det = len(x[idx])
             check_vtgp = len(x[invert_idx])
@@ -140,13 +141,15 @@ class BaseModel(nn.Module):
                 flag = 1
             elif check_vtgp > 0:
                 flag = 2
-        
+
         for i, m in enumerate(self.model):
             if m.f != -1:  # if not from previous layer
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+
             if profile:
                 self._profile_one_layer(m, x, dt)
-            if data_type is not None:              
+
+            if data_type is not None:
                 if i == 9:
                     x = m(x, data_type)
                     x0, x1 = x
@@ -804,6 +807,7 @@ class CustomModel(BaseModel):
     def init_criterion(self):
         return {"det_loss": v8DetectionLoss(self), "vtgp_loss": v8ClassificationLoss()}
 
+    
 # Functions ------------------------------------------------------------------------------------------------------------
 
 
