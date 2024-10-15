@@ -423,7 +423,7 @@ class AutoBackend(nn.Module):
 
         self.__dict__.update(locals())  # assign all variables to self
 
-    def forward(self, im, augment=False, visualize=False, embed=None):
+    def forward(self, im, augment=False, visualize=False, embed=None, data_type=None):
         """
         Runs inference on the YOLOv8 MultiBackend model.
 
@@ -444,7 +444,7 @@ class AutoBackend(nn.Module):
 
         # PyTorch
         if self.pt or self.nn_module:
-            y = self.model(im, augment=augment, visualize=visualize, embed=embed)
+            y = self.model(im, augment=augment, visualize=visualize, embed=embed, data_type=data_type)
 
         # TorchScript
         elif self.jit:
@@ -606,7 +606,7 @@ class AutoBackend(nn.Module):
         """
         return torch.tensor(x).to(self.device) if isinstance(x, np.ndarray) else x
 
-    def warmup(self, imgsz=(1, 3, 640, 640)):
+    def warmup(self, imgsz=(1, 3, 640, 640), data_type=None):
         """
         Warm up the model by running one forward pass with a dummy input.
 
@@ -617,7 +617,7 @@ class AutoBackend(nn.Module):
         if any(warmup_types) and (self.device.type != "cpu" or self.triton):
             im = torch.empty(*imgsz, dtype=torch.half if self.fp16 else torch.float, device=self.device)  # input
             for _ in range(2 if self.jit else 1):
-                self.forward(im)  # warmup
+                self.forward(im, data_type= data_type)  # warmup
 
     @staticmethod
     def _model_type(p="path/to/model.pt"):
@@ -650,3 +650,12 @@ class AutoBackend(nn.Module):
             triton = bool(url.netloc) and bool(url.path) and url.scheme in {"http", "grpc"}
 
         return types + [triton]
+
+    def add_attributes(self, **kwargs):
+        """
+        Add attributes to the AutoBackend class.
+
+        Args:
+            **kwargs: The attributes to add to the class.
+        """
+        self.__dict__.update(kwargs)

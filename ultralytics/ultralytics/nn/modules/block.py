@@ -41,11 +41,14 @@ __all__ = (
 )
 
 class SwitchHead(nn.Module):
-    def __init__(self, branch): 
+    def __init__(self): 
         super().__init__()
-        self.branch = branch
-    def forward(self, x):
-        return x
+
+    def forward(self, x, data_type=None):
+        if data_type is not None:
+            idx = data_type == 0
+            idx = idx.squeeze(0)
+            return x[idx], x[~idx]
 
 class DFL(nn.Module):
     """

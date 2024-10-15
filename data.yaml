@@ -1,0 +1,11 @@
+train_det:
+- /home/s/dunghd/train.txt
+val_det:
+- /home/s/dunghd/test.txt
+train_val_vtgp: /mnt/tuyenld/endoscopy/vi_tri_giai_phau.json
+
+# Classes
+names_det:
+  {0: UTDD, 1: UTTQ, 2: VDD, 3: VTQ, 4: VLHTT}
+names_vtgp:
+  {0: Ta_trang, 1: Hau_hong, 2: Thuc_quan, 3: Tam_vi, 4: Than_vi, 5: Phinh_vi, 6: Hang_vi, 7: Bo_cong_lon, 8: Bo_cong_nho, 9: Hanh_ta_trang}

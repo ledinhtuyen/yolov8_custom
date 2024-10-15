@@ -77,7 +77,7 @@ class BaseDataset(Dataset):
             self.im_files_pos = self.get_img_files(self.img_path["positive"])
             self.im_files_neg = self.get_img_files(self.img_path["negative"])
             self.positive_ratio = float(self.img_path['positive_ratio'])
-            self.data_type = "pos_neg"
+            self.pos_neg = "pos_neg"
             self.im_files = self.im_files_pos + self.im_files_neg
         self.labels = self.get_labels()
         self.update_labels(include_class=classes)  # single_cls and include_class

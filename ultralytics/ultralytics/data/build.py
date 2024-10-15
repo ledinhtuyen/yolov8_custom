@@ -106,7 +106,7 @@ class InfiniteDataLoader(dataloader.DataLoader):
         """Dataloader that infinitely recycles workers, inherits from DataLoader."""
         self.dataset = kwargs.get("dataset")
 
-        if hasattr(self.dataset, "data_type"):
+        if hasattr(self.dataset, "pos_neg"):
             kwargs['batch_sampler'] = PositiveNegativeSampler(
                 self.dataset, kwargs["batch_size"], shuffle=kwargs.get("shuffle", True)
             )

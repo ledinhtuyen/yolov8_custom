@@ -21,7 +21,7 @@ from torch import distributed as dist
 from torch import nn, optim
 
 from ultralytics.cfg import get_cfg, get_save_dir
-from ultralytics.data.utils import check_cls_dataset, check_det_dataset
+from ultralytics.data.utils import check_cls_dataset, check_det_dataset, check_custom_dataset
 from ultralytics.nn.tasks import attempt_load_one_weight, attempt_load_weights
 from ultralytics.utils import (
     DEFAULT_CFG,
@@ -220,7 +220,6 @@ class BaseTrainer:
 
     def _setup_train(self, world_size):
         """Builds dataloaders and optimizer on correct rank process."""
-
         # Model
         self.run_callbacks("on_pretrain_routine_start")
         ckpt = self.setup_model()
@@ -280,7 +279,13 @@ class BaseTrainer:
                 self.testset, batch_size=batch_size if self.args.task == "obb" else batch_size * 2, rank=-1, mode="val"
             )
             self.validator = self.get_validator()
-            metric_keys = self.validator.metrics.keys + self.label_loss_items(prefix="val")
+            if self.args.task == "custom":
+                metric_keys = []
+                for k, v in self.validator.items():
+                    metric_keys += v.metrics.keys
+                metric_keys += self.label_loss_items(prefix="val")
+            else:
+                metric_keys = self.validator.metrics.keys + self.label_loss_items(prefix="val")
             self.metrics = dict(zip(metric_keys, [0] * len(metric_keys)))
             self.ema = ModelEMA(self.model)
             if self.args.plots:
@@ -398,7 +403,7 @@ class BaseTrainer:
                 losses = self.tloss if loss_len > 1 else torch.unsqueeze(self.tloss, 0)
                 if RANK in {-1, 0}:
                     pbar.set_description(
-                        ("%11s" * 2 + "%11.4g" * (2 + loss_len))
+                        ("%14s" * 2 + "%14g" * (2 + loss_len))
                         % (f"{epoch + 1}/{self.epochs}", mem, *losses, batch["cls"].shape[0], batch["img"].shape[-1])
                     )
                     self.run_callbacks("on_batch_end")
@@ -492,8 +497,10 @@ class BaseTrainer:
 
         # Save checkpoints
         self.last.write_bytes(serialized_ckpt)  # save last.pt
-        if self.best_fitness == self.fitness:
-            self.best.write_bytes(serialized_ckpt)  # save best.pt
+        for k, v in self.fitness.items():
+            if k == "val_det":
+                if self.best_fitness[k] == v:
+                    self.best.write_bytes(serialized_ckpt) # save best.pt
         if (self.save_period > 0) and (self.epoch > 0) and (self.epoch % self.save_period == 0):
             (self.wdir / f"epoch{self.epoch}.pt").write_bytes(serialized_ckpt)  # save epoch, i.e. 'epoch3.pt'
 
@@ -506,6 +513,8 @@ class BaseTrainer:
         try:
             if self.args.task == "classify":
                 data = check_cls_dataset(self.args.data)
+            elif self.args.task == "custom":
+                data = check_custom_dataset(self.args.data, self.args.prefix_path)
             elif self.args.data.split(".")[-1] in {"yaml", "yml"} or self.args.task in {
                 "detect",
                 "segment",
@@ -515,31 +524,12 @@ class BaseTrainer:
                 data = check_det_dataset(self.args.data)
                 if "yaml_file" in data:
                     self.args.data = data["yaml_file"]  # for validating 'yolo train data=url.zip' usage
-            elif self.args.data.split(".")[-1] in {"json"} and self.args.task == "custom":
-                import json
-                
-                data = {"train": {}, "test": {}}
-                data_json = json.load(open(self.args.data))
-                
-                for k, v in data_json.items():
-                    if k != "metadata":
-                        data["train"][k] = v["train"]
-                        data["test"][k] = v["test"]
-                
-                # Sort the names
-                data["train"] = dict(sorted(data["train"].items()))
-                data["test"] = dict(sorted(data["test"].items()))
-                data["nc"] = len(data["train"])
-                
-                # Class names to idx
-                names_list = sorted(list(data["train"].keys()))
-                data["names"] = {i: v for i, v in enumerate(names_list)}
         except Exception as e:
             raise RuntimeError(emojis(f"Dataset '{clean_url(self.args.data)}' error ❌ {e}")) from e
         self.data = data
         if data.get("train_negative") is not None or data.get("positive_ratio") is not None:
             return {"positive" : data["train"], "negative" : data["train_negative"], "positive_ratio" : data['positive_ratio']}, data.get("val") or data.get("test")
-        else:
+        else:         
             return data["train"], data.get("val") or data.get("test")
 
     def setup_model(self):
@@ -577,11 +567,37 @@ class BaseTrainer:
 
         The returned dict is expected to contain "fitness" key.
         """
-        metrics = self.validator(self)
-        fitness = metrics.pop("fitness", -self.loss.detach().cpu().numpy())  # use loss as fitness measure if not found
-        if not self.best_fitness or self.best_fitness < fitness:
-            self.best_fitness = fitness
-        return metrics, fitness
+        if self.args.task != "custom":
+            metrics = self.validator(self)
+            fitness = metrics.pop("fitness", -self.loss.detach().cpu().numpy())  # use loss as fitness measure if not found
+            if not self.best_fitness or self.best_fitness < fitness:
+                self.best_fitness = fitness
+            return metrics, fitness
+        else:
+            metrics = {}
+            fitness = {}
+            for k, v in self.validator.items():
+                metrics[k] = v(self)
+                fitness[k] = metrics[k].pop("fitness", -self.loss.detach().cpu().numpy())
+            
+            new_metrics = {}
+            # Dictionary metrics unpacking
+            for k, v in metrics.items():
+                for k1, v1 in v.items():
+                    if k1 in new_metrics:
+                        new_metrics[k1] += v1
+                    else:
+                        new_metrics[k1] = v1
+
+            if not self.best_fitness:
+                self.best_fitness = fitness
+            else:
+                for k, v in fitness.items():
+                    if k == "val_det" and self.best_fitness[k] < v:
+                        self.best_fitness[k] = v
+            
+            return new_metrics, fitness
+                
 
     def get_model(self, cfg=None, weights=None, verbose=True):
         """Get model and raise NotImplementedError for loading cfg files."""
@@ -670,6 +686,7 @@ class BaseTrainer:
                 ckpt_args = attempt_load_weights(last).args
                 if not Path(ckpt_args["data"]).exists():
                     ckpt_args["data"] = self.args.data
+                    ckpt_args["prefix_path"] = self.args.prefix_path
 
                 resume = True
                 self.args = get_cfg(ckpt_args)

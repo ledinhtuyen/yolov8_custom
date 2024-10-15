@@ -595,7 +595,7 @@ class EarlyStopping:
         Args:
             patience (int, optional): Number of epochs to wait after fitness stops improving before stopping.
         """
-        self.best_fitness = 0.0  # i.e. mAP
+        self.best_fitness = {"val_det": 0.0, "val_vtgp": 0.0}
         self.best_epoch = 0
         self.patience = patience or float("inf")  # epochs to wait after fitness stops improving to stop
         self.possible_stop = False  # possible stop may occur next epoch
@@ -614,7 +614,9 @@ class EarlyStopping:
         if fitness is None:  # check if fitness=None (happens when val=False)
             return False
 
-        if fitness >= self.best_fitness:  # >= 0 to allow for early zero-fitness stage of training
+        # if fitness >= self.best_fitness:  # >= 0 to allow for early zero-fitness stage of training
+        all_improved = all(v > self.best_fitness.get(k, 0.0) for k, v in fitness.items())
+        if all_improved:
             self.best_epoch = epoch
             self.best_fitness = fitness
         delta = epoch - self.best_epoch  # epochs without improvement

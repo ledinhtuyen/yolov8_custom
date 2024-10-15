@@ -155,6 +155,7 @@ class Model(nn.Module):
         self,
         source: Union[str, Path, int, list, tuple, np.ndarray, torch.Tensor] = None,
         stream: bool = False,
+        data_type = None,
         **kwargs,
     ) -> list:
         """
@@ -174,6 +175,8 @@ class Model(nn.Module):
         Returns:
             (List[ultralytics.engine.results.Results]): A list of prediction results, encapsulated in the Results class.
         """
+        if data_type is not None:
+            return self.predict(source, stream, data_type= data_type, **kwargs)
         return self.predict(source, stream, **kwargs)
 
     @staticmethod
@@ -246,7 +249,6 @@ class Model(nn.Module):
             self.ckpt_path = self.model.pt_path
             if task == "custom":
                 self.task = task
-                self.branch = kwargs.get("branch")
                 self.overrides["task"] = self.model.args["task"] = task
         else:
             weights = checks.check_file(weights)  # runs in all cases, not redundant with above call
@@ -405,6 +407,7 @@ class Model(nn.Module):
         source: Union[str, Path, int, list, tuple, np.ndarray, torch.Tensor] = None,
         stream: bool = False,
         predictor=None,
+        data_type = None,
         **kwargs,
     ) -> list:
         """
@@ -424,7 +427,7 @@ class Model(nn.Module):
             source (str | int | PIL.Image | np.ndarray, optional): The source of the image for making predictions.
                 Accepts various types, including file paths, URLs, PIL images, and numpy arrays. Defaults to ASSETS.
             stream (bool, optional): Treats the input source as a continuous stream for predictions. Defaults to False.
-            predictor (BasePredictor, optional): An instance of a custom predictor class for making predictions.
+            predictor (1dictor, optional): An instance of a custom predictor class for making predictions.
                 If None, the method uses a default predictor. Defaults to None.
             **kwargs (any): Additional keyword arguments for configuring the prediction process. These arguments allow
                 for further customization of the prediction behavior.
@@ -456,6 +459,8 @@ class Model(nn.Module):
                 self.predictor.save_dir = get_save_dir(self.predictor.args)
         if prompts and hasattr(self.predictor, "set_prompts"):  # for SAM-type models
             self.predictor.set_prompts(prompts)
+        if data_type is not None:
+            return self.predictor.predict_cli(source=source) if is_cli else self.predictor(source=source, stream=stream, data_type=data_type)
         return self.predictor.predict_cli(source=source) if is_cli else self.predictor(source=source, stream=stream)
 
     def track(
@@ -649,21 +654,20 @@ class Model(nn.Module):
 
         overrides = yaml_load(checks.check_yaml(kwargs["cfg"])) if kwargs.get("cfg") else self.overrides
 
-        if self.task == "custom":
-            self.branch_type = "classify" if self.branch.startswith("cls") else "detect"
+        if self.task != "custom":
+            task2data = TASK2DATA[self.task]
         else:
-            self.branch_type = self.task
-
-        task2data = TASK2DATA[self.branch_type]
+            task2data = None
         custom = {"data": DEFAULT_CFG_DICT["data"] or task2data}  # method defaults
         args = {**overrides, **custom, **kwargs, "mode": "train"}  # highest priority args on the right
         if args.get("resume"):
+            self.ckpt_path = kwargs['ckpt_path']
             args["resume"] = self.ckpt_path
 
         self.trainer = (trainer or self._smart_load("trainer"))(overrides=args, _callbacks=self.callbacks)
         if not args.get("resume"):  # manually set model only if not resuming
-            if hasattr(self, "branch"):
-                self.trainer.model = self.trainer.get_model(weights=self.model if self.ckpt else None, cfg=self.model.yaml, branch=self.branch, task=self.task, model_scale=self.model.model_scale if self.ckpt else "n")
+            if self.task == "custom":
+                self.trainer.model = self.trainer.get_model(weights=self.model if self.ckpt else None, cfg=self.model.yaml, task=self.task, model_scale=self.model.model_scale if self.ckpt else "n")
             else:
                 self.trainer.model = self.trainer.get_model(weights=self.model if self.ckpt else None, cfg=self.model.yaml)
             self.model = self.trainer.model

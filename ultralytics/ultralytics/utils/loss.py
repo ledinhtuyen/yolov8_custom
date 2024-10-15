@@ -152,15 +152,7 @@ class v8DetectionLoss:
         device = next(model.parameters()).device  # get model device
         h = model.args  # hyperparameters
 
-        if kwargs.get('branch', None) is not None:
-            if kwargs['branch'] == 'detect':
-                m = model.model[23]  # Detect() module
-            elif kwargs['branch'] == 'cls_vtgp':
-                m = model.model[24]
-            elif kwargs['branch'] == 'cls_quality':
-                m = model.model[25]
-        else:
-            m = model.model[-1]  # Detect() module
+        m = model.model[23]  # Detect() module
 
         self.bce = nn.BCEWithLogitsLoss(reduction="none")
         self.hyp = h
